@@ -28,6 +28,20 @@ import android.net.wifi.WifiManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothSocket
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.example.smartwatchcompanion.ui.theme.SmartwatchCompanionTheme
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.util.*
+import kotlin.concurrent.thread
 
 
 class MainActivity : ComponentActivity() {
@@ -38,14 +52,19 @@ class MainActivity : ComponentActivity() {
                 this,
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.BLUETOOTH_CONNECT
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                    Manifest.permission.BLUETOOTH_SCAN
                 ),
                 0
             )
         } else {
             ActivityCompat.requestPermissions(
                 this,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.BLUETOOTH,
+                    Manifest.permission.BLUETOOTH_ADMIN
+                ),
                 0
             )
         }
@@ -71,8 +90,9 @@ fun SmartwatchDashboard() {
     var battery by remember { mutableIntStateOf(82) }      // initial battery level (fake) and updatable
     var wifiName by remember { mutableStateOf("Unknown") } // WIFI var
     var btStatus by remember { mutableStateOf("Unknown") } // BT var
+    var accelData by remember { mutableStateOf("AcX = - | AcY = - | AcZ = -") }
+    var gyroData by remember { mutableStateOf("GyX = - | GyY = - | GyZ = - | Temp = -") }
     val context = LocalContext.current // context reference
-
 
     Column(     // for vertical layout, elements are stacked vertically on screen
         modifier = Modifier
@@ -97,8 +117,15 @@ fun SmartwatchDashboard() {
         Spacer(modifier = Modifier.height(7.dp))   // add space
 
         Text(text = "Bluetooth: $btStatus", style = MaterialTheme.typography.bodyLarge)
-        Spacer(modifier = Modifier.height(7.dp))   // add space between data display and refresh button
+        Spacer(modifier = Modifier.height(32.dp))   // add space between data display and refresh button
 
+        Text("Acceleration Data:", style = MaterialTheme.typography.titleMedium)
+        Text(accelData, style = MaterialTheme.typography.bodyLarge)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text("Gyroscope Data:", style = MaterialTheme.typography.titleMedium)
+        Text(gyroData, style = MaterialTheme.typography.bodyLarge)
+        Spacer(modifier = Modifier.height(96.dp))
 
         Button(onClick = {      // create button for updated random values when clicked
             heartRate = Random.nextInt(60, 101) // random HR between 60 - 100 bpm
@@ -110,12 +137,56 @@ fun SmartwatchDashboard() {
             val info = wifiManager.connectionInfo   // get WIFI connection information
             wifiName = info.ssid.removePrefix("\"").removeSuffix("\"") // assign WIFI name to var
 
-            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager // get BT status
-            val bluetoothAdapter = bluetoothManager.adapter // assign .adapter to val
-            btStatus = if (bluetoothAdapter != null && bluetoothAdapter.isEnabled) { // check if connect
-                "Connected"     // output text if connected
-            } else {
-                "Disconnected"  // output text if disconnected
+            thread {
+                try {
+                    val bluetoothManager =
+                        context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+                    val adapter = bluetoothManager.adapter
+
+                    if (ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.BLUETOOTH_CONNECT
+                        ) == PackageManager.PERMISSION_GRANTED &&
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.BLUETOOTH_SCAN
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        // safe to use BluetoothAdapter and connect
+                    } else {
+                        btStatus = "Bluetooth permission not granted"
+                    }
+
+                    val deviceName = "ESP32_BT" // change this to match your ESP32's Bluetooth name
+                    val device: BluetoothDevice? = adapter.bondedDevices.find { it.name == deviceName }
+
+                    if (device != null) {
+                        val uuid: UUID = device.uuids[0].uuid
+                        val socket: BluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
+                        adapter.cancelDiscovery()
+                        socket.connect()
+
+                        btStatus = "Connected"
+
+                        val reader = BufferedReader(InputStreamReader(socket.inputStream))
+                        val line = reader.readLine()
+
+                        // Example input: AcX = 6852 | AcY = -13832 | AcZ = -5696 | GyX = -359 | GyY = -16 | GyZ = 162 | Temp = 44.20
+                        val parts = line.split("|").map { it.trim() }
+
+                        val accelParts = parts.filter { it.startsWith("Ac") }
+                        val gyroParts = parts.filter { it.startsWith("Gy") || it.startsWith("Temp") }
+
+                        accelData = accelParts.joinToString(" | ")
+                        gyroData = gyroParts.joinToString(" | ")
+
+                        socket.close()
+                    } else {
+                        btStatus = "ESP32 Not Found"
+                    }
+                } catch (e: Exception) {
+                    btStatus = "Error: ${e.message}"
+                }
             }
 
         }) {
